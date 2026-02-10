@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ja">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>単語ベクトル可視化（GitHub Pages）</title>
+  <link rel="stylesheet" href="style.css" />
+
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.min.js"></script>
+</head>
+
+<body>
+  <header>
+    <h1>単語ベクトル可視化（日本語）</h1>
+    <p class="note">テキスト入力 → 分かち書き → 2Dプロット → クリックで類似語TOP10（入力内）</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <label for="textInput">テキスト（1000文字まで）</label>
+      <textarea id="textInput" maxlength="1000"></textarea>
+      <div class="row">
+        <button id="runBtn">解析してプロット</button>
+        <span id="status" class="status">準備中…</span>
+      </div>
+      <label><input type="checkbox" id="posFilter" checked> 名詞/動詞/形容詞のみ</label>
+      <label><input type="checkbox" id="uniqueOnly" checked> 同じ単語は1点にまとめる</label>
+    </section>
+
+    <section class="panel">
+      <h2>2Dプロット</h2>
+      <div id="plot" class="plot"></div>
+    </section>
+
+    <section class="panel">
+      <h2>クリックした単語</h2>
+      <div id="selectedWord" class="selected">（未選択）</div>
+      <h3>類似語TOP10（入力テキスト内）</h3>
+      <ol id="simList" class="simlist"></ol>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
