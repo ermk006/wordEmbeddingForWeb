@@ -1,14 +1,17 @@
-// ========== 設定 ==========
+// ---- paths (root公開) ----
 const COORDS_CSV = "./model/coords.csv";
 const VOCAB_JSON = "./model/vocab.json";
 const VEC_BIN    = "./model/vec50.bin";
 const SIM_D = 50;
 
-const PLOTLY_URL  = "https://cdn.plot.ly/plotly-2.32.0.min.js";
-const KUROMOJI_URL= "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.min.js";
-const DIC_PATH    = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/";
+// 同梱した kuromoji
+const KUROMOJI_URL = "./kuromoji/kuromoji.js";
+const DIC_PATH     = "./kuromoji/dict/"; // ★末尾/必須
 
-// ========== DOM ==========
+// Plotly（重いので遅延ロード）
+const PLOTLY_URL = "https://cdn.plot.ly/plotly-2.32.0.min.js";
+
+// ---- DOM ----
 const els = {
   text: document.getElementById("textInput"),
   run: document.getElementById("runBtn"),
@@ -22,24 +25,21 @@ const els = {
 
 function setStatus(msg) { els.status.textContent = msg; }
 
-// ========== 遅延ロード状態 ==========
-let libsLoaded = false;
+// ---- states ----
 let tokenizer = null;
-
 let coordsLoaded = false;
-let coordMap = new Map(); // word -> {x,y}
+let coordMap = new Map();
 
 let simLoaded = false;
 let wordToIndex = new Map();
 let vecData = null;
+
 let currentWords = [];
 
-// ========== ユーティリティ ==========
+// ---- helpers ----
 function loadScriptOnce(src) {
   return new Promise((resolve, reject) => {
-    // すでに読み込まれているなら即resolve
-    if ([...document.scripts].some(s => s.src === src)) return resolve();
-
+    if ([...document.scripts].some(s => s.src === new URL(src, location.href).href)) return resolve();
     const s = document.createElement("script");
     s.src = src;
     s.async = true;
@@ -49,24 +49,22 @@ function loadScriptOnce(src) {
   });
 }
 
+function parseCSVLine(line) { return line.split(","); }
+
+function isTargetPOS(t) {
+  return t.pos === "名詞" || t.pos === "動詞" || t.pos === "形容詞";
+}
+
 function tokenizeText(text) {
   const tokens = tokenizer.tokenize(text);
   const out = [];
   for (const t of tokens) {
-    if (els.posFilter.checked) {
-      const ok = (t.pos === "名詞" || t.pos === "動詞" || t.pos === "形容詞");
-      if (!ok) continue;
-    }
+    if (els.posFilter.checked && !isTargetPOS(t)) continue;
     const w = (t.basic_form && t.basic_form !== "*") ? t.basic_form : t.surface_form;
     if (!w || !w.trim()) continue;
     out.push(w);
   }
   return out;
-}
-
-function parseCSVLine(line) {
-  // word,x,y 前提（wordにカンマが入らない想定）
-  return line.split(",");
 }
 
 function cosineSimByIndex(i, j) {
@@ -84,60 +82,58 @@ function cosineSimByIndex(i, j) {
   return dot / (Math.sqrt(ni) * Math.sqrt(nj));
 }
 
-// ========== 遅延ロード本体 ==========
-async function ensureLibsAndTokenizer() {
-  if (tokenizer) return;
-
-  setStatus("ライブラリ読込中…（初回のみ）");
+// ---- lazy loaders ----
+async function ensurePlotly() {
+  if (window.Plotly) return;
+  setStatus("描画ライブラリ読込中…（初回のみ）");
   await loadScriptOnce(PLOTLY_URL);
+}
+
+async function buildTokenizerWithTimeout(ms = 20000) {
   await loadScriptOnce(KUROMOJI_URL);
+  return await Promise.race([
+    new Promise((resolve, reject) => {
+      window.kuromoji.builder({ dicPath: DIC_PATH }).build((err, tk) => {
+        if (err) reject(err);
+        else resolve(tk);
+      });
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("kuromoji build timeout")), ms))
+  ]);
+}
 
+async function ensureTokenizer() {
+  if (tokenizer) return;
   setStatus("形態素解析準備中…（初回のみ）");
-  tokenizer = await new Promise((resolve, reject) => {
-    // kuromoji はグローバルに kuromoji が生える
-    window.kuromoji.builder({ dicPath: DIC_PATH }).build((err, tk) => {
-      if (err) reject(err);
-      else resolve(tk);
-    });
-  });
-
-  setStatus("準備完了");
+  tokenizer = await buildTokenizerWithTimeout(20000);
 }
 
 async function ensureCoords() {
   if (coordsLoaded) return;
-
   setStatus("座標(coords.csv)読込中…（初回のみ）");
   const txt = await (await fetch(COORDS_CSV, { cache: "force-cache" })).text();
   const lines = txt.split(/\r?\n/).filter(l => l.trim().length > 0);
-
-  // header skip
   for (let i = 1; i < lines.length; i++) {
     const [word, x, y] = parseCSVLine(lines[i]);
-    if (!word) continue;
     const xx = Number(x), yy = Number(y);
-    if (Number.isFinite(xx) && Number.isFinite(yy)) coordMap.set(word, { x: xx, y: yy });
+    if (word && Number.isFinite(xx) && Number.isFinite(yy)) coordMap.set(word, { x: xx, y: yy });
   }
   coordsLoaded = true;
 }
 
 async function ensureSimModel() {
   if (simLoaded) return;
-
   setStatus("類似語モデル読込中…（初回のみ）");
   const vocab = await (await fetch(VOCAB_JSON, { cache: "force-cache" })).json();
   wordToIndex = new Map(vocab.map((w, i) => [w, i]));
-
   const buf = await (await fetch(VEC_BIN, { cache: "force-cache" })).arrayBuffer();
   vecData = new Float32Array(buf);
-
-  const expected = vocab.length * SIM_D;
-  if (vecData.length !== expected) throw new Error(`vec50.bin サイズ不一致: got ${vecData.length}, expected ${expected}`);
-
+  if (vecData.length !== vocab.length * SIM_D) throw new Error("vec50.bin サイズ不一致");
   simLoaded = true;
+  setStatus("準備完了");
 }
 
-// ========== 描画 ==========
+// ---- render ----
 function renderPlot(words, xy) {
   const xs = xy.map(p => p[0]);
   const ys = xy.map(p => p[1]);
@@ -184,21 +180,21 @@ async function showSimilar(word) {
   }
 }
 
-// ========== 実行 ==========
+// ---- main ----
 async function run() {
   const text = (els.text.value || "").trim();
   if (!text) { alert("テキストを入力してください。"); return; }
 
   els.run.disabled = true;
   try {
-    // ★ここが重要：ページ表示時にやらず、クリック時に初回ロード
-    await ensureLibsAndTokenizer();
+    // クリック時に初回ロード（ページ表示時は何もしない）
+    await ensurePlotly();
+    await ensureTokenizer();
+    await ensureCoords();
 
     setStatus("分かち書き中…");
     let words = tokenizeText(text);
     if (els.uniqueOnly.checked) words = [...new Set(words)];
-
-    await ensureCoords();
 
     const kept = [];
     const xy = [];
@@ -220,13 +216,12 @@ async function run() {
 
   } catch (e) {
     console.error(e);
-    alert("エラーが発生しました。Console を確認してください。");
+    alert(`エラー: ${e.message}`);
     setStatus("エラー（Console参照）");
   } finally {
     els.run.disabled = false;
   }
 }
 
-// 初期化：何もしない（固まり防止）
 setStatus("準備完了（ボタンで開始）");
 els.run.addEventListener("click", run);
